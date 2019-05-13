@@ -11,6 +11,7 @@ from util.io import load_ckpt
 parser = argparse.ArgumentParser()
 # training options
 parser.add_argument('--root', type=str, default='./data')
+parser.add_argument('--mask_root', type=str, default='./data_mask')
 parser.add_argument('--snapshot', type=str, default='')
 parser.add_argument('--image_size', type=int, default=256)
 args = parser.parse_args()
@@ -24,7 +25,7 @@ img_transform = transforms.Compose(
 mask_transform = transforms.Compose(
     [transforms.Resize(size=size), transforms.ToTensor()])
 
-dataset_val = Places2(args.root, img_transform, mask_transform, 'val')
+dataset_val = Places2(args.root, args.mask_root, img_transform, mask_transform, 'test')
 
 model = PConvUNet().to(device)
 load_ckpt(args.snapshot, [('model', model)])
