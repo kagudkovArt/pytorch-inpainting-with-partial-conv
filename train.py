@@ -1,6 +1,7 @@
 import argparse
-import numpy as np
 import os
+
+import numpy as np
 import torch
 from tensorboardX import SummaryWriter
 from torch.utils import data
@@ -42,12 +43,12 @@ class InfiniteSampler(data.sampler.Sampler):
 parser = argparse.ArgumentParser()
 # training options
 parser.add_argument('--root', type=str, default='/srv/datasets/Places2')
-parser.add_argument('--mask_root', type=str, default='./masks')
+parser.add_argument('--mask_root', type=str, default='./mask')
 parser.add_argument('--save_dir', type=str, default='./snapshots/default')
 parser.add_argument('--log_dir', type=str, default='./logs/default')
 parser.add_argument('--lr', type=float, default=2e-4)
 parser.add_argument('--lr_finetune', type=float, default=5e-5)
-parser.add_argument('--max_iter', type=int, default=1000000)
+parser.add_argument('--max_iter', type=int, default=2000000)
 parser.add_argument('--batch_size', type=int, default=16)
 parser.add_argument('--n_threads', type=int, default=16)
 parser.add_argument('--save_model_interval', type=int, default=50000)
@@ -77,7 +78,10 @@ mask_tf = transforms.Compose(
     [transforms.Resize(size=size), transforms.ToTensor()])
 
 dataset_train = Places2(args.root, args.mask_root, img_tf, mask_tf, 'train')
-dataset_val = Places2(args.root, args.mask_root, img_tf, mask_tf, 'val')
+dataset_val = Places2(
+    '/home/kagudkov/PycharmProjects/pytorch-inpainting-with-partial-conv/TestInpaint/test_large/images_face++_curly_Thara_George_v2',
+    '/home/kagudkov/PycharmProjects/pytorch-inpainting-with-partial-conv/TestInpaint/test_large/images_face++_curly_Thara_George_v2/images_face++_curly_Thara_mask',
+    img_tf, mask_tf, 'test')
 
 iterator_train = iter(data.DataLoader(
     dataset_train, batch_size=args.batch_size,
