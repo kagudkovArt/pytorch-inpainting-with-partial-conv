@@ -81,14 +81,18 @@ class PartialConv(nn.Module):
         with torch.no_grad():
             output_mask = self.mask_conv(mask)
 
-        no_update_holes = output_mask == 0
-        mask_sum = output_mask.masked_fill_(no_update_holes, 1.0)
+        no_update_holes = (output_mask == 0).float()
+        # no_update_holes = output_mask == 0
+        # mask_sum = output_mask.masked_fill_(no_update_holes, 1.0)
+        mask_sum = output_mask * (1 - no_update_holes) + no_update_holes
 
         output_pre = (output - output_bias) / mask_sum + output_bias
-        output = output_pre.masked_fill_(no_update_holes, 0.0)
+        # output = output_pre.masked_fill_(no_update_holes, 0.0)
+        output = output_pre * (1 - no_update_holes)
 
         new_mask = torch.ones_like(output)
-        new_mask = new_mask.masked_fill_(no_update_holes, 0.0)
+        # new_mask = new_mask.masked_fill_(no_update_holes, 0.0)
+        new_mask = new_mask * (1 - no_update_holes)
 
         return output, new_mask
 
@@ -180,6 +184,79 @@ class PConvUNet(nn.Module):
             h, h_mask = getattr(self, dec_l_key)(h, h_mask)
 
         return h, h_mask
+
+    def train(self, mode=True):
+        """
+        Override the default train() to freeze the BN parameters
+        """
+        super().train(mode)
+        if self.freeze_enc_bn:
+            for name, module in self.named_modules():
+                if isinstance(module, nn.BatchNorm2d) and 'enc' in name:
+                    module.eval()
+
+
+class PConvUNetSingleInput(nn.Module):
+    def __init__(self, layer_size=7, input_channels=3, upsampling_mode='nearest'):
+        super().__init__()
+        self.freeze_enc_bn = False
+        self.upsampling_mode = upsampling_mode
+        self.layer_size = layer_size
+        self.enc_1 = PCBActiv(input_channels, 64, bn=False, sample='down-7')
+        self.enc_2 = PCBActiv(64, 128, sample='down-5')
+        self.enc_3 = PCBActiv(128, 256, sample='down-5')
+        self.enc_4 = PCBActiv(256, 512, sample='down-3')
+        for i in range(4, self.layer_size):
+            name = 'enc_{:d}'.format(i + 1)
+            setattr(self, name, PCBActiv(512, 512, sample='down-3'))
+
+        for i in range(4, self.layer_size):
+            name = 'dec_{:d}'.format(i + 1)
+            setattr(self, name, PCBActiv(512 + 512, 512, activ='leaky'))
+        self.dec_4 = PCBActiv(512 + 256, 256, activ='leaky')
+        self.dec_3 = PCBActiv(256 + 128, 128, activ='leaky')
+        self.dec_2 = PCBActiv(128 + 64, 64, activ='leaky')
+        self.dec_1 = PCBActiv(64 + input_channels, input_channels,
+                              bn=False, activ=None, conv_bias=True)
+
+    def forward(self, input_tensor):
+        input = input_tensor[:, :3, :, :]
+        input_mask = input_tensor[:, 3:, :, :]
+        h_dict = {}  # for the output of enc_N
+        h_mask_dict = {}  # for the output of enc_N
+
+        h_dict['h_0'], h_mask_dict['h_0'] = input, input_mask
+
+        h_key_prev = 'h_0'
+        for i in range(1, self.layer_size + 1):
+            l_key = 'enc_{:d}'.format(i)
+            h_key = 'h_{:d}'.format(i)
+            h_dict[h_key], h_mask_dict[h_key] = getattr(self, l_key)(
+                h_dict[h_key_prev], h_mask_dict[h_key_prev])
+            h_key_prev = h_key
+
+        h_key = 'h_{:d}'.format(self.layer_size)
+        h, h_mask = h_dict[h_key], h_mask_dict[h_key]
+
+        # concat upsampled output of h_enc_N-1 and dec_N+1, then do dec_N
+        # (exception)
+        #                            input         dec_2            dec_1
+        #                            h_enc_7       h_enc_8          dec_8
+
+        for i in range(self.layer_size, 0, -1):
+            enc_h_key = 'h_{:d}'.format(i - 1)
+            dec_l_key = 'dec_{:d}'.format(i)
+
+            h = F.interpolate(h, scale_factor=2, mode=self.upsampling_mode)
+            h_mask = F.interpolate(
+                h_mask, scale_factor=2, mode='nearest')
+
+            h = torch.cat([h, h_dict[enc_h_key]], dim=1)
+            h_mask = torch.cat([h_mask, h_mask_dict[enc_h_key]], dim=1)
+            h, h_mask = getattr(self, dec_l_key)(h, h_mask)
+
+        return torch.cat((h, h_mask), dim=1)
+        # return h, h_mask
 
     def train(self, mode=True):
         """

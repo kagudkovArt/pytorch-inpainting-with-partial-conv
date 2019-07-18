@@ -23,11 +23,12 @@ args = parser.parse_args()
 device = torch.device('cuda')
 
 
-def get_input_and_mask(input_tensor):
-    num_channels = input_tensor.shape[1] // 2
-    input = input_tensor[:, :num_channels, :, :]
-    mask = input_tensor[:, num_channels:, :, :]
-    return input, mask
+# def get_input_and_mask(input_tensor):
+#     num_channels = input_tensor.shape[1] // 2
+#     input = input_tensor[:, :num_channels, :, :]
+#     mask = input_tensor[:, num_channels:, :, :]
+#     return input, mask
+
 
 
 class PartialConvSingleInput(nn.Module):
@@ -50,24 +51,37 @@ class PartialConvSingleInput(nn.Module):
         # http://masc.cs.gmu.edu/wiki/partialconv
         # C(X) = W^T * X + b, C(0) = b, D(M) = 1 * M + 0 = sum(M)
         # W^T* (M .* X) / sum(M) + b = [C(M .* X) – C(0)] / D(M) + C(0)
-        input, mask = get_input_and_mask(input_tensor)
+
+        input, mask = input_tensor
+        # input = input_tensor[0]
+        # mask = input_tensor[1]
+        # input, mask = get_input_and_mask(input_tensor)
 
         output = self.input_conv(input * mask)
         if self.input_conv.bias is not None:
             output_bias = self.input_conv.bias.view(1, -1, 1, 1).expand_as(
                 output)
         else:
-            output_bias = torch.zeros(output.shape).cuda()
+            # output_bias = torch.zeros(output.shape).cuda()
+            output_bias = output.new(output.shape).zero_()
             # output_bias = torch.cuda.FloatTensor(output.shape).fill_(0)
 
         with torch.no_grad():
             output_mask = self.mask_conv(mask)
 
-        no_update_holes = (output_mask == torch.zeros(output_mask.shape).cuda()).float()
+        zero_tensor = output_mask.new(output_mask.shape).zero_()
+        no_update_holes = (output_mask == zero_tensor).float()
         # no_update_holes = output_mask == 0
         # mask_sum = output_mask.masked_fill_(no_update_holes, 1.0)
         # mask_sum = output_mask * (1.0 - no_update_holes) + no_update_holes
-        update_holes = torch.ones(no_update_holes.shape).cuda() - no_update_holes
+
+
+        # ones_tensor = no_update_holes.new(no_update_holes.shape).zero_() + 1
+        ones_tensor = zero_tensor + 1
+
+
+        # torch.ones(no_update_holes.shape).cuda()
+        update_holes = ones_tensor - no_update_holes
         mask_sum = output_mask * update_holes + no_update_holes
 
         output_pre = (output - output_bias) / mask_sum + output_bias
@@ -75,13 +89,11 @@ class PartialConvSingleInput(nn.Module):
         # output = output_pre * (1.0 - no_update_holes)
         output = output_pre * update_holes
 
-        # new_mask = torch.ones_like(output)
-        new_mask = torch.ones(output.shape).cuda()
-        # new_mask = new_mask.masked_fill_(no_update_holes, 0.0)
-        # new_mask = new_mask * (1.0 - no_update_holes)
-        new_mask = new_mask * update_holes
+        # new_mask = output.new(output.shape).zero_() + 1
+        # new_mask = new_mask * update_holes
 
-        return torch.cat((output, new_mask), dim=1)
+        return torch.stack((output, update_holes))
+        # return torch.cat((output, new_mask), dim=1)
 
 
 class PCBActivSingleInput(nn.Module):
@@ -106,7 +118,9 @@ class PCBActivSingleInput(nn.Module):
 
     def forward(self, input_tensor):
         h_tensor = self.conv(input_tensor)
-        h, h_mask = get_input_and_mask(h_tensor)
+        h, h_mask = h_tensor
+        # h, h_mask = get_input_and_mask(h_tensor)
+
         # num_channels = int(input_tensor.shape[1] / 2)
         # h = h_tensor[:, :num_channels, :, :]
         # h_mask = h_tensor[:, num_channels:, :, :]
@@ -116,7 +130,8 @@ class PCBActivSingleInput(nn.Module):
         if hasattr(self, 'activation'):
             h = self.activation(h)
 
-        return torch.cat((h, h_mask), dim=1)
+        return torch.stack((h, h_mask))
+        # return torch.cat((h, h_mask), dim=1)
 
 
 class PConvUNetSingleInput(nn.Module):
@@ -145,7 +160,8 @@ class PConvUNetSingleInput(nn.Module):
     def forward(self, input_tensor):
         # input = input_tensor[:, :3, :, :]
         # input_mask = input_tensor[:, 3:, :, :]
-        input, input_mask = get_input_and_mask(input_tensor)
+        input, input_mask = input_tensor
+        # input, input_mask = get_input_and_mask(input_tensor)
 
         h_dict = {}  # for the output of enc_N
         h_mask_dict = {}  # for the output of enc_N
@@ -157,14 +173,10 @@ class PConvUNetSingleInput(nn.Module):
             l_key = 'enc_{:d}'.format(i)
             h_key = 'h_{:d}'.format(i)
             h = getattr(self, l_key)(
-                torch.cat((h_dict[h_key_prev], h_mask_dict[h_key_prev]), dim=1))
-            h_dict[h_key], h_mask_dict[h_key] = get_input_and_mask(h)
-            # h_dict[h_key] = h[:, :3, :, :]
-            # h_mask_dict[h_key] = h[:, 3:, :, :]
+                torch.stack((h_dict[h_key_prev], h_mask_dict[h_key_prev])))
+                # torch.cat((h_dict[h_key_prev], h_mask_dict[h_key_prev]), dim=1))
+            h_dict[h_key], h_mask_dict[h_key] = h
             h_key_prev = h_key
-            # h_dict[h_key], h_mask_dict[h_key] = getattr(self, l_key)(
-            #     h_dict[h_key_prev], h_mask_dict[h_key_prev])
-            # h_key_prev = h_key
 
         h_key = 'h_{:d}'.format(self.layer_size)
         h, h_mask = h_dict[h_key], h_mask_dict[h_key]
@@ -184,10 +196,14 @@ class PConvUNetSingleInput(nn.Module):
 
             h = torch.cat([h, h_dict[enc_h_key]], dim=1)
             h_mask = torch.cat([h_mask, h_mask_dict[enc_h_key]], dim=1)
+            # h = torch.stack((h, h_dict[enc_h_key]))
+            # h_mask = torch.stack((h_mask, h_mask_dict[enc_h_key]))
 
             h_tensor = getattr(self, dec_l_key)(
-                torch.cat((h, h_mask), dim=1))
-            h, h_mask = get_input_and_mask(h_tensor)
+                torch.stack((h, h_mask)))
+                # torch.cat((h, h_mask), dim=1))
+            h, h_mask = h_tensor
+            # h, h_mask = get_input_and_mask(h_tensor)
 
         return h_tensor
         # return h, h_mask
@@ -365,13 +381,17 @@ def load_pb(path_to_pb):
         return graph
 
 
+if not os.path.exists(args.save_dir):
+    os.makedirs(args.save_dir)
+
+
 input_shape = (3, 512, 512)
 
 input = np.random.randn(1, *input_shape).astype(np.float32)
 mask = np.random.binomial(1, 0.5, np.prod(input_shape)) \
     .reshape((1, *input_shape)).astype(np.float32)
-input_array = np.concatenate((input, mask), 1)
-
+# input_array = np.concatenate((input, mask), 1)
+input_array = np.stack((input, mask))
 
 model_name = os.path.splitext(os.path.basename(args.model_path))[0]
 
@@ -403,8 +423,8 @@ with torch.no_grad():
         dummy_output = model(dummy_input)
     print("New model: {}".format(time() - start_new))
 
-    new_output, new_mask = get_input_and_mask(dummy_output)
-
+    new_output, new_mask = dummy_output
+    # new_output, new_mask = get_input_and_mask(dummy_output)
 
 
 assert(new_output.allclose(old_output))
@@ -422,17 +442,12 @@ tf_rep = prepare(model_onnx)
 input_name = tf_rep.tensor_dict['input'].name
 output_name = tf_rep.tensor_dict['output'].name
 
-# print(tf_rep.tensor_dict)
 print("Input: {}, output: {}".format(input_name, output_name))
-# # Input nodes to the model
-# print('inputs:', tf_rep.inputs)
-#
-# # Output nodes from the model
-# print('outputs:', tf_rep.outputs)
 
 tf_rep.export_graph('{:s}/{}.pb'.format(args.save_dir, model_name))
+
 # output_tf = tf_rep.run(input_array).output
-# print(output_tf.output)
+# print(output_tf)
 
 tf_graph = load_pb('{:s}/{}.pb'.format(args.save_dir, model_name))
 
@@ -443,13 +458,15 @@ input_tf_tensor = tf_graph.get_tensor_by_name(input_name)
 
 start = time()
 output_tf = sess.run(output_tf_tensor,
-                  feed_dict={input_tf_tensor: input_array})
+                     feed_dict={input_tf_tensor: input_array})
 print(time() - start)
 
 output_torch = dummy_output.cpu().detach().numpy()
 
-data_torch, mask_torch = get_input_and_mask(output_torch)
-data_tf, mask_tf = get_input_and_mask(output_tf)
+# data_torch, mask_torch = get_input_and_mask(output_torch)
+# data_tf, mask_tf = get_input_and_mask(output_tf)
+data_torch, mask_torch = output_torch
+data_tf, mask_tf = output_tf
 
 # print(np.max(np.abs(output_torch - output_tf)))
 

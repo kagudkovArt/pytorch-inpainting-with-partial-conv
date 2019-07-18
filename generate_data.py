@@ -14,6 +14,7 @@ def random_walk(canvas, ini_x, ini_y, length):
     y_list = []
     for i in range(length):
         r = random.randint(0, len(action_list) - 1)
+
         x = np.clip(x + action_list[r][0], a_min=0, a_max=img_size - 1)
         y = np.clip(y + action_list[r][1], a_min=0, a_max=img_size - 1)
         x_list.append(x)

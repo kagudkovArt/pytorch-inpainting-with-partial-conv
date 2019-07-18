@@ -43,7 +43,11 @@ class InfiniteSampler(data.sampler.Sampler):
 parser = argparse.ArgumentParser()
 # training options
 parser.add_argument('--root', type=str, default='/srv/datasets/Places2')
-parser.add_argument('--mask_root', type=str, default='./mask')
+parser.add_argument('--data_folder', type=str, default='data_large')
+parser.add_argument('--mask_folder', type=str, default='data_large_segmented')
+parser.add_argument('--val_data_folder', type=str, default='val_data')
+parser.add_argument('--val_mask_folder', type=str, default='val_mask')
+parser.add_argument('--landmarks_file', type=str, default='data_large_faces_positions.json')
 parser.add_argument('--save_dir', type=str, default='./snapshots/default')
 parser.add_argument('--log_dir', type=str, default='./logs/default')
 parser.add_argument('--lr', type=float, default=2e-4)
@@ -51,8 +55,9 @@ parser.add_argument('--lr_finetune', type=float, default=5e-5)
 parser.add_argument('--max_iter', type=int, default=2000000)
 parser.add_argument('--batch_size', type=int, default=16)
 parser.add_argument('--n_threads', type=int, default=16)
-parser.add_argument('--save_model_interval', type=int, default=50000)
+parser.add_argument('--save_model_interval', type=int, default=10000)
 parser.add_argument('--vis_interval', type=int, default=5000)
+# parser.add_argument('--vis_interval', type=int, default=1)
 parser.add_argument('--log_interval', type=int, default=10)
 parser.add_argument('--image_size', type=int, default=256)
 parser.add_argument('--resume', type=str)
@@ -77,16 +82,33 @@ img_tf = transforms.Compose(
 mask_tf = transforms.Compose(
     [transforms.Resize(size=size), transforms.ToTensor()])
 
-dataset_train = Places2(args.root, args.mask_root, img_tf, mask_tf, 'train')
+dataset_train = Places2(
+    os.path.join(args.root, args.data_folder),
+    os.path.join(args.root, args.mask_folder),
+    os.path.join(args.root, args.landmarks_file),
+    img_tf, mask_tf, 'train')
 dataset_val = Places2(
-    '/home/kagudkov/PycharmProjects/pytorch-inpainting-with-partial-conv/TestInpaint/test_large/images_face++_curly_Thara_George_v2',
-    '/home/kagudkov/PycharmProjects/pytorch-inpainting-with-partial-conv/TestInpaint/test_large/images_face++_curly_Thara_George_v2/images_face++_curly_Thara_mask',
+    os.path.join(args.root, args.val_data_folder),
+    os.path.join(args.root, args.val_mask_folder),
+    os.path.join(args.root, 'val_large_new_aligned_fpp.json'),
     img_tf, mask_tf, 'test')
+# dataset_train = Places2(args.root, args.mask_root, img_tf, mask_tf, 'train')
+# dataset_val = Places2(
+#     '/home/kagudkov/PycharmProjects/pytorch-inpainting-with-partial-conv/TestInpaint/test_large/images_face++_curly_Thara_George_v2',
+#     '/home/kagudkov/PycharmProjects/pytorch-inpainting-with-partial-conv/TestInpaint/test_large/images_face++_curly_Thara_George_v2/images_face++_curly_Thara_mask',
+#     img_tf, mask_tf, 'test')
 
 iterator_train = iter(data.DataLoader(
     dataset_train, batch_size=args.batch_size,
     sampler=InfiniteSampler(len(dataset_train)),
     num_workers=args.n_threads))
+
+iterator_val = iter(data.DataLoader(
+    dataset_val, batch_size=args.batch_size,
+    sampler=InfiniteSampler(len(dataset_val)),
+    shuffle=False, num_workers=args.n_threads))
+
+
 print(len(dataset_train))
 model = PConvUNet().to(device)
 
@@ -109,9 +131,13 @@ if args.resume:
     print('Starting from iter ', start_iter)
 
 for i in tqdm(range(start_iter, args.max_iter)):
+# for i in range(1):
     model.train()
 
-    image, mask, gt = [x.to(device) for x in next(iterator_train)]
+    image, mask, gt, _ = [x for x in next(iterator_train)]
+    image = image.to(device)
+    mask = mask.to(device)
+    gt = gt.to(device)
     output, _ = model(image, mask)
     loss_dict = criterion(image, mask, output, gt)
 
@@ -122,9 +148,29 @@ for i in tqdm(range(start_iter, args.max_iter)):
         if (i + 1) % args.log_interval == 0:
             writer.add_scalar('loss_{:s}'.format(key), value.item(), i + 1)
 
+    if (i + 1) % args.log_interval == 0:
+        writer.add_scalars('loss', {'train': loss}, i + 1)
+
     optimizer.zero_grad()
     loss.backward()
     optimizer.step()
+
+    if (i + 1) % args.log_interval == 0:
+        model.eval()
+        image, mask, gt, _ = [x for x in next(iterator_val)]
+        image = image.to(device)
+        mask = mask.to(device)
+        gt = gt.to(device)
+
+        with torch.no_grad():
+            output, _ = model(image, mask)
+        loss_dict = criterion(image, mask, output, gt)
+
+        val_loss = 0.0
+        for key, coef in opt.LAMBDA_DICT.items():
+            value = coef * loss_dict[key]
+            val_loss += value
+        writer.add_scalars('loss', {'val': val_loss}, i + 1)
 
     if (i + 1) % args.save_model_interval == 0 or (i + 1) == args.max_iter:
         save_ckpt('{:s}/ckpt/{:d}.pth'.format(args.save_dir, i + 1),
@@ -132,7 +178,11 @@ for i in tqdm(range(start_iter, args.max_iter)):
 
     if (i + 1) % args.vis_interval == 0:
         model.eval()
-        evaluate(model, dataset_val, device,
-                 '{:s}/images/test_{:d}.jpg'.format(args.save_dir, i + 1))
+        save_val_path = '{:s}/images/{:d}'.format(args.save_dir, i + 1)
+        if not os.path.exists(save_val_path):
+            os.makedirs(save_val_path)
+
+        evaluate(model, dataset_val, device, save_val_path)
+                 # '{:s}/images/test_{:d}.jpg'.format(args.save_dir, i + 1))
 
 writer.close()
