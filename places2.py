@@ -189,7 +189,7 @@ class Places2(torch.utils.data.Dataset):
         return mask
 
     def __getitem__(self, index):
-        # try:
+        try:
             need_horizontal_flip = np.random.random() < 0.5
             im_name = os.path.splitext(os.path.basename(self.paths[index]))[0] + '.png'
             gt_img = Image.open(self.paths[index])
@@ -229,9 +229,9 @@ class Places2(torch.utils.data.Dataset):
             #     save_image(torch.cat((unnormalize_image(gt_img * mask), mask, segmentation_mask, unnormalize_image(gt_img)), dim=-1),
             #                os.path.join(log_path, im_name))
             return gt_img * mask, mask, gt_img, im_name
-        # except Exception as re:
-        #     logging.error(f"{str(re)} on index {str(index)}")
-        #     return self.__getitem__(index + 1)
+        except Exception as re:
+            logging.error(f"{str(re)} on index {str(index)}")
+            return self.__getitem__(index + 1)
             # if index < len(self.paths) - 1:
             #     return self.__getitem__(index + 1)
             # else:
